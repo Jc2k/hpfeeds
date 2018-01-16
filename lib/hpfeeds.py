@@ -18,7 +18,16 @@ OP_INFO		= 1
 OP_AUTH		= 2
 OP_PUBLISH	= 3
 OP_SUBSCRIBE	= 4
+OP_UNSUBSCRIBE  = 5
 BUFSIZ = 16384
+
+MAXBUF = 1024 ** 2
+SIZES = {
+    OP_ERROR: 5 + MAXBUF,
+    OP_INFO: 5 + 256 + 20,
+    OP_AUTH: 5 + 256 + 20,
+    OP_PUBLISH: 5 + MAXBUF,
+}
 
 __all__ = ["new", "FeedException"]
 
@@ -36,6 +45,8 @@ def msgauth(rand, ident, secret):
 
 class FeedUnpack(object):
 	def __init__(self):
+		self.reset()
+	def reset(self):
 		self.buf = bytearray()
 	def __iter__(self):
 		return self
@@ -48,16 +59,27 @@ class FeedUnpack(object):
 			raise StopIteration('No message.')
 
 		ml, opcode = struct.unpack('!iB', buffer(self.buf,0,5))
+		ml_len = SIZES.get(opcode, 5 + MAXBUF)
+
+		if ml > ml_len:
+			raise ProtocolException('Unexpectedly large message. Opcode: %d. Size: %d' % (opcode, ml))
+
 		if len(self.buf) < ml:
 			raise StopIteration('No message.')
 
 		data = bytearray(buffer(self.buf, 5, ml-5))
 		del self.buf[:ml]
+
+		if opcode < OP_ERROR or opcode > OP_UNSUBSCRIBE:
+			raise ProtocolException('Invalid opcode: %s' % opcode)
+
 		return opcode, data
 
 class FeedException(Exception):
 	pass
 class Disconnect(Exception):
+	pass
+class ProtocolException(Disconnect):
 	pass
 
 class HPC(object):
@@ -146,6 +168,9 @@ class HPC(object):
 
 		if self.connected == False:
 			raise FeedException('Could not connect to broker [%s].' % (self.host))
+
+		# New connection, so make sure no state left in protocol state
+		self.unpacker.reset()
 
 		try: d = self.s.recv(BUFSIZ)
 		except socket.timeout: raise FeedException('Connection receive timeout.')
